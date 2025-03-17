@@ -1,0 +1,1265 @@
+---
+title: "Manipulation of intensive longitudinal data"
+author: "Luca Menghini, Ph.D., Enrico Perinelli, Ph.D., Cristian Balducci, Ph.D."
+date: "`r Sys.Date()`"
+bibliography: [packages.bib]
+nocite: '@*'
+output:
+  html_document:
+    df_print: paged
+    toc: true
+    toc_float: true
+    toc_depth: 4
+    css: styles.css
+    code_download: true
+  pdf_document: default
+  word_document: default
+  theme: united
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<br>
+
+# Aims and content
+
+The present document includes the R code to be used for implementing the data pre-processing steps required or recommended to prepare intensive longitudinal design (ILD) datasets for being analyzed with multilevel and other data analysis techniques. After a few setting procedures, the document depicts each step based on simple and commented R code ranging from data reading to data merging, cleaning, and centering, up to psychometric analyses and computation of the composite scores. Then, the document include a few examples of descriptive and inferential multilevel analyses that can be applied to investigate the job demand-control hypotheses ([Karasek, 1979](#ref)) from the pre-processed dataset. Finally, the document ends with an illustration of how a multiverse data manipulation approach can be applied to evaluate the robustness of the obtained findings.
+
+The document and the included code are based on R 4.4.1, as returned by the `R.version` command below. To get start with R, we recommend [Kabacoff (2022)](#ref), [Einspruch (2022)](#ref), and [Wickham et al. (2023)](#ref) (freely available at [this link](https://r4ds.hadley.nz/index.html)). Specifically for I/O psychologists, we also suggest three books on human resources analytics in R: [Caughlin (2023)](#ref) (freely available at [this link](https://rforhr.com/index.html#hragrowth)), [McNulty (2022)](#ref) (freely available at [this link](https://peopleanalytics-regression-book.org/index.html)), and [Starbuck (2023)](#ref) (freely available at [this link](https://link.springer.com/book/10.1007/978-3-031-28674-2)).
+```{r  }
+R.version
+```
+
+Note that any text preceded by the `#` symbol is a comment that is not considered by R.
+```{r  }
+# this is a comment
+```
+
+Here, we remove all objects from the R global environment to ensure that we start from scratch.
+```{r  }
+# removing all objets from the workspace
+rm(list=ls())
+```
+
+The following R packages are used in this document (see [References](#ref) section):
+```{r  }
+# required packages
+packages <- c("osfr","birk","plyr","psych","lavaan","lme4","sjPlot","ggplot2","gridExtra","tidyverse")
+```
+
+```{r  echo=FALSE}
+# this is just to generate packages references at the end of the document
+knitr::write_bib(c(.packages(), packages),"packages.bib")
+```
+
+```{r  eval=FALSE}
+# run this line to install all missing packages
+xfun::pkg_attach2(packages, message = FALSE); rm(list=ls())
+```
+
+Moreover, since we work with existing data available from the OSF repository at <https://doi.org/10.17605/OSF.IO/87A9P>, we use the `osfr` package to download the `S5_processedData` folder including the datasets. Note that the folder is downloaded in the current working directory used by R, which can be visualized by running the `getwd()` command.
+```{r  eval=FALSE}
+# download dataset from OSF repository
+library(osfr)
+repo <- # retrieving repository
+  osf_retrieve_node("https://doi.org/10.17605/OSF.IO/87A9P") 
+osf_download(osf_ls_files(repo)[1, ], # downloading datasets into the current working directory
+             conflicts="overwrite") 
+```
+
+<br>
+
+# 1. Data manipulation steps {#steps}
+
+## 1.1. Data reading
+
+First, we read the `ild` dataset including time-varying variables such as task demands and task control, and the preliminary questionnaire `prelqs` dataset including time-invariant variables such as participants' age and gender. Both datasets were recorded using the `CSV` format and can be read with the `read.csv()` function. Note that we set `stringsAsFactors = TRUE` so that character string columns are considered as categorical variables.
+```{r  }
+# reading ILD dataset
+ild <- read.csv("S5_processedData/ESM_processed.csv",
+                stringsAsFactors = TRUE)
+
+# reading preliminary questionnaire
+prelqs <- read.csv("S5_processedData/RETRO_processed.csv", 
+                   stringsAsFactors = TRUE) 
+```
+
+<div class="alert alert-info">
+<details><summary>*What if the data collection platform exports a separate file for each participant?* <br> Click here to view additional code</summary>
+<p>
+
+<br>
+
+In our case, we do not need to merge multiple data files because the dataset has already been unified ([see full report](https://luca-menghini.github.io/ESMscales-workplaceStress/S2_dataProcessing/S2_dataProcessing_report.html)). Yet, since some platforms export separate files grouping data by participant, it is worth illustrating how these can be merged into a single unified dataset. For doing this, we firstly split the `ild` dataset into separate data files that we save based on participant identifiers (i.e., participants `ID` are not reported in a dataset column but each file is named with the corresponding participant identifier). Then, we use the `list.files` function to list the names of, and the paths to, each data file. Second, we create an empty data.frame `ild2` with zero row and the same number of column than the original `ild` dataset. Finally, we use a for-loop to read each data file, recreate the `ID` variable based on the file name, and add the new data to the empty dataset `ild2` using the `rbind` function. We can see that the resulting dataset corresponds to the original `ild` dataset.
+```{r  eval=FALSE}
+# saving data separately by participant after creating the "data-split" folder
+dir.create("data-split") # creating the "data-split" folder inside the working directory
+for(id in levels(as.factor(ild$ID))){ # saving data within the "data-split" folder
+  write.csv(subset(ild[ild$ID==id,],select=-ID),paste0("data-split/",id,".csv"),
+            row.names=FALSE) }
+# note: the code above is just to illustrate this preliminary step
+```
+```{r  }
+# selecting the name of the folder storing the data files
+data.path <- "data-split"
+
+# listing the file names within the data.path folder
+fileNames <- list.files(data.path,full.names=TRUE)
+fileNames # showing file names
+
+# creating empty data.frame ild2
+ild2 <- data.frame(matrix(nrow=0,ncol=37))
+
+# reading and merging data files into a unified dataset 'ild2'
+for(fileName in fileNames){ # for each file included in the dat.path folder...
+  newFile <- read.csv(fileName) # reading file
+  newFile$ID <- gsub("data-split/","", # extracting participant ID from file name
+                     gsub(".csv","",fileName))
+  # adding new data to the empty data.frame (the row names should be the same)
+  ild2 <- rbind(ild2,newFile) } 
+
+# showing the unified dataset
+ild2[,c("ID",colnames(ild2)[1:(ncol(ild)-1)])]
+
+# showing the original dataset
+ild
+```
+
+</p>
+</details>
+</div>
+
+Then, we identify and select the main data columns of interest by using squared brackets `[rownames, colnames]` standing for 'data subset'. Note that the names of the selected columns should be written within quotes (e.g., `"ID"`) and should be included in the `c()` function, standing for 'combine'. Of note, while the `RunTimestamp` and `SubmissionTimestamp` variables were named by the survey recording system, the remaining variables were carefully named to identify items belonging to the same scale (e.g., items starting with "d" were included in the Task Demand Scale, whereas items starting with "c" were included in the Task Control Scale). As highlighted in the main manuscript, strategically naming the variables is critical to prevent mistakes in the following steps and improve the effectiveness and transparency of the data analysis scripts.
+```{r  }
+# selecting columns of interest from ILD dataset
+ild <- ild[,c("ID", # participant identifier
+              "RunTimestamp","SubmissionTimestamp", # temporal coordinates
+              "d1","d2","d3","d4", # task demands items
+              "c1","c2","c3", # task control items
+              "v1","v2","v3")] # negative valence items
+
+# selecting columns of interest from preliminary questionnaire dataset
+prelqs <- prelqs[,c("ID", # participant identifier
+                    "age","gender")] # time-invariant variables
+```
+
+Finally, we take a first look at both datasets and the included number of participants and observations. We can see that both datasets include a total of `r nlevels(ild$ID)` participants, with the `ild` dataset including a total of `r nrow(ild)` observations.
+```{r  }
+# ILD dataset
+nrow(ild) # original number of observations
+nlevels(ild$ID) # original number of participants
+head(ild) # showing first six rows of data
+
+# preliminary questionnaire dataset
+nrow(prelqs) # original number of observations and participants
+head(prelqs) # showing first six rows of data
+```
+
+<br>
+
+## 1.2. Temporal synchronization {.tabset .tabset-fade .tabset-pills}
+
+As a second step, we synchronize and verify the correctness of the temporal coordinates associated with each data point. In our case, temporal coordinates are only available for the `ild` dataset. We can verify their correctness by firstly converting them as `POSIXct` (i.e., the variable class used by R to work with dates and times), by splitting `time` and `date` information, and by checking whether response times are consistent with scheduled times. Note that the `as.POSIXct` function requires specifying the date-time format of the inputted character strings using the `format` argument. For instance, the date format "`%Y-%m-%d`" stands for dates expressed as "year-month-day", reporting years with century (e.g., "`2025`") and months and days as decimal numbers (e.g., "01" for January, and "02" for the second day of the month), whereas the time format "`%H:%M:%S`" stands for times expressed as "hours:minutes:seconds" as decimal numbers (for more details, run `?strptime` in the console).
+```{r  }
+# response initiation and submission time as POSIXct
+ild$RunTimestamp <- as.POSIXct(ild$RunTimestamp, 
+                               format = "%Y-%m-%d %H:%M:%S")
+ild$SubmissionTimestamp <- as.POSIXct(ild$SubmissionTimestamp, 
+                                      format = "%Y-%m-%d %H:%M:%S")
+
+# response initiation date as Date without time
+ild$date <- as.Date(substr(ild$RunTimestamp,1,10),
+                    format="%Y-%m-%d")
+
+# response initiation time as POSIXct without date
+ild$time <- as.POSIXct(substr(ild$RunTimestamp,12,19), 
+                       format = "%H:%M:%S")
+```
+
+Here, we plot the histograms of the resulting `date` and `time` variables to verify the frequency of responses initiated inside and outside the study temporal frames. Note that with objects of class `POSIXct` the function `hist` (for plotting histograms) requires specifying the temporal intervals to be plotted with the argument `breaks` (for more details, run `?hist.POSIXt` in the console), which we set to `"months"` and `"hours"` for response dates and times, respectively. We can see that response initiation dates and times are compatible with the data collection period (i.e., October 2018 - October 2019) and with the scheduled ESM timing (i.e., between 9:15 AM and 6:15 PM), respectively. A few cases ($n$ = 22) are slightly outside the scheduled time intervals, but these might be due to variability in temporal synchronization across devices, so we keep them.
+```{r  }
+# plotting date and time
+par(mfrow=c(2,1)) # this is to have 2 plots in the same panel 
+hist(ild$date,breaks="months") # plotting date frequencies month-by-month
+hist(ild$time,breaks="hours") # plotting time frequencies hour-by-hour
+
+# number of cases with time outside the scheduled intervals
+nrow(ild[!is.na(ild$time) & 
+           (ild$time<as.POSIXct("09:15:00", format = "%H:%M:%S") | 
+              ild$time>as.POSIXct("18:30:00", format = "%H:%M:%S")),])
+```
+
+Moreover, we use the recoded temporal coordinates to create the variable `day`, indexing the day of participation from 1 to 3. This is done by using a for-loop that compares each row `i` in the `ild` dataset with the previous row `i-1`. Then, the `if` and `else` operators are used to establish the value of the `day` variables, such that it is increased by one unit every time that the value of the `date` variable increases by one day within the same participant, whereas it is reset to the value "1" every time that the value of the variable `ID` is different than the value reported in the previous row (i.e., day 1 for a different participant).
+```{r  }
+# creating day (i.e., day of participation from 1 to 3)
+ild$day <- 1 # initially set as 1
+for(i in 2:nrow(ild)){ # FOR each row starting from the second one...
+  if(ild[i,"ID"] != ild[i-1,"ID"]){ # IF the ID value is different than the previous row...
+    ild[i,"day"] <- 1 # ...restart from day 1.
+    
+  } else {  # IF the ID value is the same of the previous row...
+    if(!is.na(ild[i,"date"]) & # AND both current and previous date are not missing...
+       !is.na(ild[i-1,"date"]) & 
+       as.POSIXlt(ild[i,"date"])$wday != # AND the date value is different than the previous row...
+         as.POSIXlt(ild[i-1,"date"])$wday){
+      ild[i,"day"] <- ild[i-1,"day"] + 1 # ...add 1 day.
+      
+    } else{ # IF same ID value but the date value is the same than the previous row...
+        ild[i,"day"] <- ild[i-1,"day"] # ...keep the same day than the previous row.
+        }}}
+
+# sanity check: day can only take value 1, 2, or 3 (ok)
+table(ild$day) 
+```
+
+Note that the `day` variable created above is only used to identify the observations associated with the same participant-by-day cluster, but it cannot be used to operationalize temporal distances as it does not imply equidistant intervals. Indeed, participants were allowed to freely choose whether starting on Monday, Wednesday, or Friday, implying that the distance between day 1 and day 2 can be equal to 2 days for some participants (i.e., from Monday to Wednesday or from Wednesday to Friday) and 3 days for some other participants (i.e., from Friday to Monday). To get a variable that indexes the day of the week by accounting for the actual temporal distance between days (i.e., implying equidistant intervals), it is possible to use the `as.POSIXlt` function by extracting the weekday with the `$wday` syntax. This returns the weekday number from 0 (Sunday) to 6 (Saturday). In our case, it can only get values 1 = Monday, 3 = Wednesday, or 5 = Friday.
+```{r }
+data.frame(ID = ild$ID, # participant ID
+           RunTimestamp = ild$RunTimestamp, # original date-time variable
+           day = ild$day, # participant-by-day indicator created above
+           wday = as.POSIXlt(ild$RunTimestamp)$wday) # day of week
+```
+
+Finally, we use the scheduled timestamps to create the variable `beep`, indexing the measurement occasion within each day, from 1 to 7. To account for potential variability in device temporal synchronization, 10 minutes are subtracted from each lower timestamp and added to each upper timestamp, respectively.
+```{r message=FALSE}
+# listing minimum, central, and maximum scheduled time for each time point
+times <- list(c("09:15:00","09:30:00","10:15:00"), # beep 1
+              c("10:20:00","10:30:00","10:40:00"), # beep 2
+              c("11:50:00","12:00:00","12:10:00"), # beep 3
+              c("13:20:00","13:30:00","13:40:00"), # beep 4
+              c("14:50:00","15:00:00","15:10:00"), # beep 5
+              c("16:20:00","16:30:00","16:40:00"), # beep 6
+              c("17:50:00","18:00:00","18:10:00")) # beep 7
+
+# creating beep (i.e., survey number within day from 1 to 7)
+for(i in 1:length(times)){ # assign beep value depending on each couple of min-max
+  ild[!is.na(ild$time) & 
+        ild$time > (as.POSIXct(times[[i]][1], format = "%H:%M:%S") - 10*60) & 
+        ild$time < (as.POSIXct(times[[i]][3], format = "%H:%M:%S") + 10*60),"beep"] <- i }
+
+# correcting beep when response time is outside the scheduled intervals
+times <- c("09:30:00","10:30:00","12:00:00","13:30:00","15:00:00","16:30:00","18:00:00") # vector of central times
+for(i in 1:nrow(ild)){ # when time is outside the scheduled intervals, the closest 'beep' value is assigned
+  if(is.na(ild[i,"beep"]) & !is.na(ild[i,"time"])){ require(birk)
+    ild[i,"beep"] <- which.closest(as.POSIXct(times, format = "%H:%M:%S"), ild[i,"time"]) }}
+table(ild$beep) # sanity check: beep can only take value 1-7 (ok)
+```
+
+Here, we visualize the original `RunTimestamp` variable along with the newly created `day` and `beep` variables.
+```{r  }
+ild[,c("ID","RunTimestamp","day","beep")]
+```
+
+<br>
+
+## 1.3. Data cleaning
+
+Third, we inspect and filter cases of missing and inaccurate data. To track the total number of excluded observations and participants, we initially record the original sample size at both levels.
+```{r  }
+# original number of observations
+n1 <- nrow(ild)
+
+# original number of participants
+n2 <- nlevels(ild$ID)
+```
+
+Even more wisely, we might save the original dataset(s) before applying any data cleaning procedure, so that if any error occurs in the process we can start from this ‘checkpoint’ rather than restarting from the beginning. 
+```{r  }
+# saving data before cleaning it
+ild.original <- ild
+prelqs.original <- prelqs
+
+# # run these lines to restart from the raw data
+# ild <- ild.original
+# prelqs <- prelqs.original
+```
+
+<br>
+
+### 1.3.1. Incomplete responses
+
+Here, we inspect and filer the number of cases with missing values for some or all variables (e.g., possibly due to lack of compliance or technical issues with the mobile app). First, we remove any participant that only responded to the preliminary questionnaire but did not respond to any ESM questionnaire (`r nrow(ild[is.na(ild$RunTimestamp),])`, `r round(100*nrow(ild[is.na(ild$RunTimestamp),])/nrow(ild),1)`%), and vice versa (`r nrow(prelqs[is.na(prelqs$age) | is.na(prelqs$gender) | !prelqs$ID%in%ild$ID,])`, `r round(100*nrow(prelqs[is.na(prelqs$age) | is.na(prelqs$gender) | !prelqs$ID%in%ild$ID,])/nrow(prelqs),1)`%). Note that the `%in%` operator is used to update each dataset by only including the `ID` values that are also included in the other dataset, and vice versa.
+```{r  }
+# removing participants with no response to the preliminary questionnaire
+prelqs <- prelqs[!is.na(prelqs$age) & # only retaining rows with non-missing values to age...
+                   !is.na(prelqs$gender),] # ... and gender
+ild <- ild[ild$ID %in% as.character(prelqs$ID),] # updating ild dataset
+
+# removing participants with no response to any ESM questionnaire
+ild <- ild[!is.na(ild$RunTimestamp),] # only retaining rows with non-missing values to RunTimeSamp
+prelqs <- prelqs[prelqs$ID %in% as.character(ild$ID),] # updating prelqs dataset
+```
+
+Then, we filter all responses to the first `beep` of each day (*n* = `r nrow(ild[!is.na(ild$beep) & ild$beep==1,])`, `r round(100*nrow(ild[!is.na(ild$beep) & ild$beep==1,])/nrow(ild[!is.na(ild$beep),]),1)`%), which only included negative valence but not task demands or task control items. 
+```{r  }
+# removing all responses to the first daily survey (not including task demands and task control)
+N1 <- nrow(ild) # saving original sample size for comparison
+ild <- ild[ild$beep!=1,] # removing responses to the first survey of each day
+cat("Removed",N1-nrow(ild),"responses (",round(100*(N1-nrow(ild))/N1,1),"% )")
+```
+
+Finally, we inspect and remove all cases with missing responses to any items (list-wise deletion). This is done by applying the `na.omit` function to the subset of the `ild` dataset that only includes the columns considered for the following steps, namely the participant identifier `ID`, the temporal coordinates of the responses, and the three multi-item scales. Specifically, items are selected with the `paste0` function, which pastes the letter identifying each scale (i.e., `v` for negative valence, `d` for task demands, and `c` for task control) with the item number (e.g., `paste0("v",1:3)` returns a vector with values "v1", "v2", and "v3").
+```{r  }
+# list-wise deletion: removing cases with missing responses to any core variable
+N1 <- nrow(ild) # saving original sample size for comparison
+ild <- 
+  na.omit(ild[,c("ID", # participant identifier
+                 "RunTimestamp","SubmissionTimestamp","day","beep", # temporal coordinates
+                 paste0("v",1:3),paste0("d",1:4),paste0("c",1:3))]) # item scores
+cat("Removed",N1-nrow(ild),"responses (",round(100*(N1-nrow(ild))/N1,1),"% )")
+```
+
+<br>
+
+### 1.3.2. Double responses
+
+As a subsequent step, we inspect cases of double responses (i.e., two or more responses with the same `ID`, `day`, and `beep` values). Again, this is done with the `paste0` function, which creates a variable combining participant, day, and beep identifiers so that we can identify and remove any cases of duplicated value for this variable. We can see that no duplicated cases are detected in our case.
+```{r  }
+# detecting double responses (i.e. same ID, day, and beep value)
+nrow(ild[duplicated(paste0(ild$ID, ild$day, ild$beep)),]) # no double responses in the dataset
+
+# # run this line to remove double responses
+# ild <- ild[!duplicated(paste0(ild$ID, ild$day, ild$beep)),]
+```
+
+<br>
+
+### 1.3.3. Careless responses
+
+Here, we inspect and filter cases of potentially careless responses and respondents. Specifically, following [Curran (2016)](#ref), we illustrate careless response detection by looking for cases with excessively fast response time. Considering the repetitive nature of ESM designs, we apply a more conservative criterion than that proposed by [Curran (2016)](#ref) (i.e., less than 2 seconds per item) and we remove all response taking 1.5 seconds per item. In our case, each ESM questionnaire included 21 items (see [Menghini et al., 2023](#ref)), resulting in a total cut-off time of 21 $\times$ 1.5 seconds = 31.5 seconds. We can see that the time difference between `SubmissionTimestamp` and `RunTimestamp` values is lower than 31.5 seconds only in one case.
+```{r  }
+# detecting cases with total response time below 31.5 seconds
+nrow(ild[difftime(ild$SubmissionTimestamp,ild$RunTimestamp,units="secs") < 31.5,])
+
+# removing cases with total response time below 31.5 seconds
+ild <- ild[difftime(ild$SubmissionTimestamp,ild$RunTimestamp,units="secs") > 31.5,]
+```
+
+<br>
+
+### 1.3.4. Compliance rate {.tabset .tabset-fade .tabset-pills}
+
+Finally, we inspect the participants' compliance rate and apply our exclusion criterion by removing all participants with less than 2 valid observations per day. First, we use a for-loop to compute the response rate of each participant (i.e., percentage of submitted responses over the 18 scheduled questionnaires for each participant) and, within that loop, we compute the total number of submitted responses for each participant-by-day couple, adding these variables to the `prelqs` dataset. Second, we plot the created response rate variables. Finally, we exclude participants with less than 2 responses per day.
+```{r  fig.width=12,fig.height=3}
+# computing overall and daily compliance rate
+for(i in 1:nrow(prelqs)){ # No. responses over total number of scheduled data points (n = 18)
+  prelqs[i,"compRate"] <- 100*nrow(ild[ild$ID==as.character(prelqs[i,"ID"]),])/18
+  for(day in 1:3){ # computing number of nonmissing data points per each day
+    prelqs[i,paste0("n.day",day)] <- nrow(ild[ild$ID==as.character(prelqs[i,"ID"]) & ild$day==day,]) }}
+
+# plotting original compliance
+par(mfrow=c(1,4))
+for(i in c("compRate","n.day1","n.day2","n.day3")){ hist(prelqs[,i],main=i) }
+
+# excluding participants with less than 2 valid data points per day
+N2 <- nrow(prelqs); N1 <- nrow(ild) # saving original sample sizes for comparison
+prelqs <- prelqs[prelqs$n.day1 >= 2 & prelqs$n.day2 >= 2 & prelqs$n.day3 >= 2,] # excluding participants from prelqs
+ild <- ild[ild$ID %in% as.character(prelqs$ID),]
+cat("Removed",N2-nrow(prelqs),"participants (",round(100*(N2-nrow(prelqs))/N2,1),
+    "% ) and",N1-nrow(ild),"observations (",round(100*(N1-nrow(ild))/N1,1),"% )")
+
+# plotting updated compliance
+par(mfrow=c(1,4))
+for(i in c("compRate","n.day1","n.day2","n.day3")){ hist(prelqs[,i],main=i) }
+```
+
+<br>
+
+### 1.3.5. Excluded data
+
+Here, we compute the total number of excluded observations and participants by comparing the original sample sizes with those obtained after applying all data cleaning procedures.
+```{r  }
+# resetting ID levels
+ild$ID <- as.factor(as.character(ild$ID))
+prelqs$ID <- as.factor(as.character(prelqs$ID))
+
+# total number and percentage of excluded participants
+n2 - nlevels(ild$ID); 100*(n2 - length(table(ild$ID)))/n2
+
+# total number and percentage of excluded observations
+n1 - nrow(ild); 100*(n1 - nrow(ild))/n1
+```
+
+<br>
+
+## 1.4. Data merging {.tabset .tabset-fade .tabset-pills}
+
+Here, we merge the time-invariant data included in the wide-form `prelqs` dataset (i.e., participants' `age` and `gender`) with the time-varying data included in the long-form `ild` dataset. This is done with the `join()` function from the `plyr` package based on the shared variable `ID`, identifying all the data points associated with the same participant.
+```{r  }
+# data merging
+library(plyr) # opening plyr package to use the join() function
+ild <- join(ild, # long-form dataset
+            prelqs[,c("ID","age","gender")], # selecting columns from the wide-form dataset
+            by = "ID") # setting the column shared by the two datasets
+
+# showing some columns from the merged dataset
+ild[,c("ID","age","gender","day","beep","v1")]
+```
+
+<br>
+
+## 1.5. Data centering {.tabset .tabset-fade .tabset-pills}
+
+Here, we center any time-varying variable (i.e., ESM item scores such as `v1`) by computing the corresponding cluster-mean (e.g., `v1_mean`) and cluster-mean-centered variable (e.g., `v1_cmc`) (see see [Hamaker & Grasman, 2015](#ref); [Wang & Maxwell, 2015](#ref)). Since in R the same result can be achieved in multiple ways, some of which might be more intuitive for some users but not for others, this step is implemented in two different ways, namely using `base` R and with the `tidyverse` syntax.
+
+### Base R
+
+With `base` R, cluster means (named "variable_mean") are computed using the `aggregate` function, which allows to compute the mean of one or more variables (here, the negative valence, task demand, and task control item scores) based on a grouping variable (here, the participant identifier variable `ID`). Then, we add cluster means to the `ild` long-form dataset and we use a for-loop for computing cluster-mean-centered scores (named "variable_cmc") by subtracting cluster-mean values from the original variable values, for each time-varying variable.
+```{r  }
+# selecting variable names
+VarNames <- c("v1","v2","v3","d1","d2","d3","d4","c1","c2","c3")
+
+# computing cluster-mean values of time-varying variables
+means <- aggregate(x = ild[,VarNames], # variables to be aggregated
+                   by = list(ild$ID), # cluster variable (it should be a list)
+                   FUN = mean) # aggregating function (mean)
+colnames(means) <- c("ID", # renaming variables to avoid duplicated names below
+                     paste0(VarNames,"_mean"))
+
+# joining cluster means to the long-form dataset
+ild <- plyr::join(ild,means,by="ID")
+
+# computing cluster-mean-centered values
+for(VarName in VarNames){ # for each time-varying variable
+  ild[,paste0(VarName,"_cmc")] <- # the cluster-mean-centered variable (_cmc)...
+    ild[,VarName] - # ...is equal to the original variable...
+    ild[,paste0(VarName,"_mean")] } # ...minus the cluster-mean variable (_mean).
+
+# showing example variables
+ild[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+```
+
+<br>
+
+### Tidyverse
+
+Here, we replicate the same operations in three alternative ways based on the `tidyverse` syntax (see [Wickham et al., 2023](#ref)). In option A, we use the pipe operator `%>%` to concatenate operations, the `group_by` function to group operations by participant `ID`, and the `mutate` function to specify which operations should be applied (i.e., computing cluster-mean and cluster-mean-centered values). In option B, we directly use the `mutate` function to specify both the operations to be applied and the grouping variable (specified with the argument `.by`). Finally, option C is an extension of option B where we use the `across` function to repeat the operations specified in the `.fns` argument across all the columns specified in the `.cols` argument of the `mutate` function. In this way, it is possible to avoid manually rewriting the same operations for each variable, as in option A and B. 
+```{r  echo=FALSE,message=FALSE,warning=FALSE}
+# this is just to avoid outputting long text message when loading the package
+library(tidyverse)
+```
+```{r  }
+# loading tidyverse package collection
+library(tidyverse)
+
+# option A: mutate and group_by
+ild_tidyverse_A <- 
+  ild %>%
+  group_by(ID) %>% # grouping operations by cluster variable "ID"
+  mutate(c1_mean = mean(c1), # computing cluster-mean variables (only examples)
+         d1_mean = mean(d1),
+         c1_cmc = c1 - c1_mean, # computing cluster-mean-centered variable (only examples)
+         d1_cmc = d1 - d1_mean) 
+ild_tidyverse_A[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+
+# option B: mutate with ".by"
+ild_tidyverse_B <- 
+  mutate(ild,
+         c1_mean = mean(c1), # computing cluster-mean variables (only examples)
+         d1_mean = mean(d1),
+         c1_cmc = c1 - c1_mean, # computing cluster-mean-centered variable (only examples)
+         d1_cmc = d1 - d1_mean,
+         .by = ID) # grouping operations by cluster variable "ID"
+ild_tidyverse_B[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+
+# option C: repeat option B over multiple columns using the "across" command
+ild_tidyverse_C <-
+  mutate(ild,
+         across(
+           # selecting all the columns on which repeating the operations
+           .cols = c("v1","v2","v3","d1","d2","d3","d4","c1","c2","c3"), 
+           .fns = list( # list of operations to be repeated
+             mean =~ mean(.x), # computing cluster-mean variable
+             cmc =~ .x - mean(.x) )), # computing cluster-mean-centered variable
+         .by = ID) # grouping operations by cluster variable "ID"
+ild_tidyverse_C[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+```
+
+<br>
+
+## 1.6. Psychometrics
+
+Here, we evaluate the psychometric properties of the considered ESM variables.
+
+### 1.6.1. Item scores {.tabset .tabset-fade .tabset-pills}
+
+First, we visualize the distribution of, and the correlations between, item scores. We can see that all item scores share the same range (1-7) and that most scores are quite symmetrically distributed, although with some skewed distributions (items `c1`, `c2`, and `c3`). Better symmetry is shown by cluster-mean and cluster-mean-centered values.
+```{r  fig.width=12,fig.height=4}
+# selecting items to be evaluated
+items <- c("v1","v2","v3","d1","d2","d3","d4","c1","c2","c3")
+
+# plotting original item score distributions
+par(mfrow=c(2,5))
+for(item in items){ hist(ild[,item],main=item,xlab="",breaks=30) }
+
+# plotting cluster-mean score distributions
+par(mfrow=c(2,5))
+for(item in items){ hist(ild[!duplicated(ild$ID),paste0(item,"_mean")],main=paste0(item,"_mean"),xlab="",breaks=30) }
+
+# plotting cluster-mean-centered score distributions
+par(mfrow=c(2,5))
+for(item in items){ hist(ild[,paste0(item,"_cmc")],main=paste0(item,"_cmc"),xlab="",breaks=30) }
+```
+
+Here, we compute and visualize the level-specific zero-order correlations among the considered items. Level-1 (within-individual) and level-2 (between-individual) correlations are computed by correlating cluster-mean-centered (*n* = `r nrow(ild)`) and cluster-mean values (*n* = `r nrow(prelqs)`), respectively. We can see that correlations are in the expected directions, with stronger correlations at level 2 (shown below the main diagonal) than at level 1 (shown above the main diagonal), and among item scores belonging to the same scale than among scores from different scales.
+```{r warning=FALSE,message=FALSE,fig.width=8,fig.height=6}
+# computing level-1 correlations
+cor1 <- round(cor(ild[,items]),2)
+
+# computing level-2 correlations
+cor2 <- round(cor(ild[!duplicated(ild$ID),paste0(items,"_mean")]),2)
+
+# visualizing correlations
+library(psych)
+cor1[lower.tri(cor1)] <- cor2[lower.tri(cor2)] # merging the two matrices
+corPlot(cor1) # plotting correlation matrix
+```
+
+<br>
+
+### 1.6.2. Reliability indices {.tabset .tabset-fade .tabset-pills}
+
+Here, we compute reliability indices based on generalizability theory, that is by fitting a random-intercept-only model to decompose the variance in item scores based on participants, items, time, and their interactions (see [Shrout & Lane (2012)](#ref); [Cranford et al., 2006](#ref)). This is done using the `multilevel.reliability()` function from the `psych` package.
+```{r warning=FALSE,message=FALSE,fig.width=8,fig.height=6}
+# isolating focused items
+items <- c("v1","v2","v3")
+
+# creating variable 'time' (joining day and beep)
+ild$time <- paste(ild$day, ild$beep)
+
+# computing reliability indices for negative valence items
+multilevel.reliability(x = ild, # long-form dataset
+                       grp = "ID", # cluster variable (categorical)
+                       Time = "time", # time variable (categorical)
+                       items = items, # item names
+                       lmer = TRUE, aov = FALSE # additional arguments to be included
+                       )[c("RkF", "Rc")] # selecting the target coefficients
+
+# reliability indices for task demands
+multilevel.reliability(ild, grp="ID", Time="time", items=c("d1","d2","d3","d4"),lmer=TRUE, aov=FALSE)[c("RkF","Rc")]
+
+# reliability indices for task control
+multilevel.reliability(ild, grp="ID", Time="time", items=c("c1","c2","c3"),lmer=TRUE, aov=FALSE)[c("RkF","Rc")]
+```
+
+<br>
+
+### 1.6.3. MCFA
+
+Here, we provide some illustrative code exemplifying a way to conduct a multilevel confirmatory factor analysis (MCFA) of the considered items, based on [Jack & Jorgensen (2017)](#ref). Specifically, we fit and compare a configural model `fit.conf` (with the same factor structure across levels) and a weak-invariance model `fit.winv` (with both the same structure and equivalent factor loadings across levels). We can see that the two models fit the data comparably, and we trust the weak-invariance model `fit.winv`.
+```{r message=FALSE,warning=FALSE}
+# model specification: configural model (same structure across levels)
+m.conf <- 'level: 1
+           NegVal_w =~ v1 + v2 + v3
+           taskDem_w =~ d1 + d2 + d3 + d4
+           taskCon_w =~ c1 + c2 + c3
+           
+           level: 2
+           NegVal_b =~ v1 + v2 + v3
+           taskDem_b =~ d1 + d2 + d3 + d4
+           taskCon_b =~ c1 + c2 + c3'
+
+# model specification: weak-invariance model (same structure and loadings across levels)
+m.winv <- 'level: 1
+           NegVal_w =~ a*v1 + b*v2 + c*v3
+           taskDem_w =~ d*d1 + e*d2 + f*d3 + g*d4
+           taskCon_w =~ h*c1 + i*c2 + j*c3
+           
+           level: 2
+           NegVal_b =~ a*v1 + b*v2 + c*v3
+           taskDem_b =~ d*d1 + e*d2 + f*d3 + g*d4
+           taskCon_b =~ h*c1 + i*c2 + j*c3
+           '
+
+# model fit (note: some participants show no variance in some items, which is quite common)
+library(lavaan)
+fit.conf <- cfa(model = m.conf, data = ild, cluster="ID", std.lv=TRUE)
+fit.winv <- cfa(model = m.winv, data = ild, cluster="ID", std.lv=TRUE)
+
+# fit indices
+round(lavInspect(fit.conf, what = "fit")[c("rmsea","cfi","srmr_within","srmr_between")],3) # configural
+round(lavInspect(fit.winv, what = "fit")[c("rmsea","cfi","srmr_within","srmr_between")],3) # weak invariance
+```
+
+The inspection of the standardized parameters estimated by the weak-invariance model reveals significant factor loadings ranging from `r round(min(standardizedsolution(fit.winv)[standardizedsolution(fit.winv)$op=="=~","est.std"]),2)` to `r round(max(standardizedsolution(fit.winv)[standardizedsolution(fit.winv)$op=="=~","est.std"]),2)`. The model also estimates significant correlations among latent variables in the expected directions, with the only exception of that between demands and control at level 2 (not significant). Overall, these results support the validity of the measurement model hypothesized for the considered items.
+```{r }
+# factor loadings from the selected model (weak invariance)
+p <- standardizedsolution(fit.winv) # standardized coefficients
+p[p$op=="=~",] # selecting factor loadings
+
+# correlations among latent factors
+p[p$lhs%in%c("NegVal_w","taskDem_w","taskCon_w") & p$lhs != p$rhs & p$op=="~~",] # level 1
+p[p$lhs%in%c("NegVal_b","taskDem_b","taskCon_b") & p$lhs != p$rhs & p$op=="~~",] # level 2
+```
+
+<br>
+
+### 1.6.4. Level-specific reliability {.tabset .tabset-fade .tabset-pills}
+
+Finally, we use the MCFA model selected above to compute level-specific McDonald's $\omega$ coefficients for each scale (see [Geldhof et al. 2014](#ref)). We can see that all $\omega$ coefficients are satisfactory with values higher than 0.70 and higher coefficients at level 2 than at level 1.
+```{r }
+# omega within negative valence
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="v","est.std"][1:3] # selecting factor loadings at level 1
+round( sum(sl)^2 / # omega = sum of squared loadings /
+         (sum(sl)^2 + sum(1 - sl^2)) ,2) # (sum of squared loadings + residual variances)
+
+# omega within - task demands
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="d","est.std"][1:4]
+round( sum(sl)^2 / (sum(sl)^2 + sum(1 - sl^2)) ,2) 
+
+# omega within - task control
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="c","est.std"][1:3] 
+round( sum(sl)^2 / (sum(sl)^2 + sum(1 - sl^2)) ,2) 
+
+# omega between - negative valence
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="v","est.std"][4:6]
+round( sum(sl)^2 / (sum(sl)^2 + sum(1 - sl^2)) ,2) 
+
+# omega between - task demands
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="d","est.std"][5:6] 
+round( sum(sl)^2 / (sum(sl)^2 + sum(1 - sl^2)) ,2) 
+
+# omega between - task control
+sl <- p[p$op=="=~" & substr(p$rhs,1,1)=="c","est.std"][4:6]
+round( sum(sl)^2 / (sum(sl)^2 + sum(1 - sl^2)) ,2) 
+```
+
+Of note, the same coefficients can be obtained more effectively (i.e., without fitting MCFA models) by using the `omegaSEM` function of the `multilevelTools` package.
+```{r warning=FALSE}
+# loading multilevelTools library
+library(multilevelTools)
+
+# Negative valence
+omegaSEM(items=paste0("v",1:3), id ="ID", data=ild)$Results
+
+# Task demand
+omegaSEM(items=paste0("d",1:4), id ="ID", data=ild)$Results
+
+# Task control
+omegaSEM(items=paste0("c",1:3), id ="ID", data=ild)$Results
+```
+
+<br>
+
+## 1.7. Composite scores {.tabset .tabset-fade .tabset-pills}
+
+Here, we compute the composite scores for each scale by averaging the corresponding item scores. Then we compute the cluster-mean and the cluster-mean-centered versions of the composite scores using the same procedures shown in Step 5.  As done above, we show how to implement this step by using both `base` R and, alternatively, the `tidyverse` syntax.
+
+### Base R
+
+With `base` R, we use the `apply` function to compute the composite scores `NV`, `TD`, and `TC` by computing the mean score by row. Then, we use the same code shown in section 1.5 to compute the cluster-mean (named `NVb`, `TDb`, and `TCb`) and cluster-mean-centered scores (named `NVw`, `TDw`, and `TCw`).
+```{r  }
+# computing composite scores
+ild$NV <- apply(ild[,c("v1","v2","v3")],1,mean,na.rm=TRUE) # Negative Valence
+ild$TD <- apply(ild[,c("d1","d2","d3","d4")],1,mean,na.rm=TRUE) # Task Demands
+ild$TC <- apply(ild[,c("c1","c2","c3")],1,mean,na.rm=TRUE) # Task Control
+
+# selecting variable names
+VarNames <- c("NV","TD","TC")
+
+# computing cluster-mean values of time-varying variables (see section 1.5)
+means <- aggregate(x=ild[,VarNames],by=list(ild$ID),FUN=mean) 
+colnames(means) <- c("ID",paste0(VarNames,"b"))
+ild <- plyr::join(ild,means,by="ID")
+
+# computing cluster-mean-centered values (see section 1.5)
+for(VarName in VarNames){ 
+  ild[,paste0(VarName,"w")] <- ild[,VarName] - ild[,paste0(VarName,"b")] } 
+
+# showing example variables
+ild[,c("ID","day","beep","NV","NVb","NVw")]
+```
+
+Here, we visualize the distributions of the resulting composite scores. We can see that composite scores are quite symmetrically distributed, although with some positive skewness for negative valence. Cluster-mean-centered score distributions are more symmetric than cluster-mean distributions.
+```{r fig.width=8,fig.height=2}
+# visualizing composite score distributions
+par(mfrow=c(1,3))
+for(VarName in VarNames){ 
+  hist(ild[,VarName],main=VarName,xlab="",breaks=30) }
+
+# visualizing cluster means of composite scores
+for(VarName in paste0(VarNames,"b")){
+  hist(ild[!duplicated(ild$ID),VarName],main=VarName,xlab="",breaks=30) }
+
+# visualizing cluster-mean-centered composite scores
+for(VarName in paste0(VarNames,"w")){ 
+  hist(ild[,VarName],main=VarName,xlab="",breaks=30) }
+```
+
+<br>
+
+### Tidyverse
+
+Here, we replicate the same operations in two alternative ways based on the `tidyverse` syntax (see [Wickham et al., 2023](#ref)). In option A, we use the pipe operator `%>%` to concatenate operations, the `group_by` function to group operations by participant `ID`, and the `mutate` function to specify which operations should be applied (i.e., computing composite scores and their cluster means and cluster-mean-centered values). In option B, we directly use the `mutate` function to specify all operations to be applied and the grouping variable (specified with the argument `.by`).
+```{r  }
+# loading tidyverse package collection
+library(tidyverse)
+
+# option A: mutate and group_by
+ild_tidyverse_A <- 
+  ild %>%
+  group_by(ID) %>% # grouping operations by cluster variable "ID"
+         # computing composite scores
+  mutate(NV = mean(c(v1,v2,v3)), 
+         TD = mean(c(d1,d2,d3,d4)),
+         TC = mean(c(c1,c2,c3)),
+         # computing cluster-mean variables
+         NV_mean = mean(NV),
+         TD_mean = mean(TD),
+         TC_mean = mean(TC),
+         # computing cluster-mean-centered variables
+         NV_cmc = NV - NV_mean,
+         TD_cmc = TD - TD_mean,
+         TC_cmc = TC - TC_mean) 
+ild_tidyverse_A[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+
+# option B: mutate with ".by"
+ild_tidyverse_B <- 
+  mutate(ild,
+         # computing composite scores
+         NV = mean(c(v1,v2,v3)), 
+         TD = mean(c(d1,d2,d3,d4)),
+         TC = mean(c(c1,c2,c3)),
+         # computing cluster-mean variables
+         NV_mean = mean(NV),
+         TD_mean = mean(TD),
+         TC_mean = mean(TC),
+         # computing cluster-mean-centered variables
+         NV_cmc = NV - NV_mean,
+         TD_cmc = TD - TD_mean,
+         TC_cmc = TC - TC_mean,
+         .by = ID) # grouping operations by cluster variable "ID"
+ild_tidyverse_B[,c("ID","day","beep","c1","c1_mean","c1_cmc","d1","d1_mean","d1_cmc")]
+```
+
+<br>
+
+## 1.8. Lagging and leading {.tabset .tabset-fade .tabset-pills}
+
+Here, we provide some code exemplifying how to manipulate ILD data to move a variable (task demands) one time point backward (lagging) or forward (leading) , although such transformed variables are not used in the following analyses.  As done above, we show how to implement this step by using both `base` R and, alternatively, the `tidyverse` syntax.
+
+### Base R
+
+With `base` R, lagging is implemented with a for-loop that pastes the variable value from the previous row if the values of both participant (i.e., `ID`) and time identifiers (i.e., `day`) are equal to those of the previous row. Similarly, leading is implemented with a for-loop the pastes the variable value from the following row if the participant and time values are equal to those of the following row. Here, we show an example with the variable `TD`.
+```{r message=FALSE, warning=FALSE}
+# saving data as an alternative dataset
+ild_baseR <- ild[,c("ID","day","TD")]
+
+# lagging TD variable
+for(i in 2:nrow(ild)){ # for each row in the ild dataset
+  if(ild[i,"ID"] == ild[i-1,"ID"] & # IF same ID of the previous row... 
+     ild[i,"day"] == ild[i-1,"day"]){ # ...AND same day of the previous row...
+    ild_baseR[i,"TD.lag"] <- ild[i-1,"TD"] # ...paste the value of the previous row
+  }}
+
+# leading TD variable
+for(i in 1:(nrow(ild)-1)){ # for each row in the ild dataset
+  if(ild[i,"ID"] == ild[i+1,"ID"] & # IF same ID of the next row... 
+     ild[i,"day"] == ild[i+1,"day"]){ # ...AND same day of the next row...
+    ild_baseR[i,"TD.lead"] <- ild[i+1,"TD"] # ...paste the value of the next row
+  }}
+
+# showing original, lagged, and led variable
+ild_baseR[,c("ID","day","TD","TD.lag","TD.lead")]
+```
+
+<br>
+
+### Tidyverse
+
+Here, we replicate the same operations in three alternative ways based on the `tidyverse` syntax (see [Wickham et al., 2023](#ref)), all of which uses the `lag` and the `lead`, functions within the `mutate` function. In option A, In option A, we use the pipe operator `%>%` to concatenate operations, the `group_by` function to group operations by participant `ID` and `day`, and the `mutate`, `lag`, and `lead` functions to specify which operations should be applied (i.e., lagging and leading by *n* = 1 within the same day and the participant). In option B, we directly use the `mutate` function to specify both the operations to be applied and the two grouping variables (specified with the argument `.by`). Finally, option C is an extension of option B where we use the `across` function to repeat the operations specified in the `.fns` argument across all the columns specified in the `.cols` argument of the `mutate` function. In this way, it is possible to avoid manually rewriting the same operations for each variable, as in option A and B. 
+```{r message=FALSE, warning=FALSE}
+# loading tidyverse package collection
+library(tidyverse)
+
+# option A: mutate and group_by
+ild_tidyverse_A <- 
+  ild %>%
+  group_by(ID,day) %>% # grouping operations by cluster variable "ID"
+  mutate(TD.lag = lag(TD, n = 1), # lagging the TD variable
+         TD.lead = lead(TD, n = 1)) # leading the TD variableriable
+ild_tidyverse_A[,c("ID","day","TD","TD.lag","TD.lead")] # showing data
+
+# option B: mutate with ".by"
+ild_tidyverse_B <- 
+  mutate(ild,
+         TD.lag = lag(TD, n = 1), # lagging the TD variable
+         TD.lead = lead(TD, n = 1), # leading the TD variable
+         .by = c(ID,day)) # grouping operations by cluster variable "ID"
+ild_tidyverse_B[,c("ID","day","TD","TD.lag","TD.lead")] # showing data
+
+# option C: repeat option B over multiple columns using the "across" command
+ild_tidyverse_C <-
+  mutate(ild,
+         across(
+           # selecting all the columns on which repeating the operations
+           .cols = c("TD","TC","NV"), 
+           .fns = list( # list of operations to be repeated
+             lag =~ lag(.x, n = 1), # lagging the TD variable
+             lead =~ lead(.x, n = 1) )), # leading the TD variable
+         .by = c(ID,day)) # grouping operations by cluster variable "ID"
+ild_tidyverse_C[,c("ID","day","TD","TD_lag","TD_lead","TC","TC_lag","TC_lead")] # showing data
+```
+
+<br>
+
+# 2. Data analysis {#analyses}
+
+## 2.1. Descriptive statistics {.tabset .tabset-fade .tabset-pills}
+
+Here, we compute descriptive statistics, namely the number of included observations and participants, mean, SD, and frequencies of each included variables, the ICC(1) of time-varying variables, and the level-specific correlations among the included quantitative variables. To illustrate how the same output can be obtained in multiple ways, we compute descriptive statistics both using `base` R syntax and, alternatively, using the `psych` package.
+
+### Base R
+
+With `base` R, the mean and standard deviation of quantitative variables and the frequency of categorical variables are computed within a for-loop. A second for-loop is then used to extract the variance components from intercept-only linear mixed-effects regression models, which are used to estimate the ICC(1). Finally, we use the `cor` function to compute and merge within- and between-individual correlations.
+
+```{r fig.width=8,fig.height=2, message=FALSE, warning=FALSE}
+# number of included observations
+cat("Level 1:",nrow(ild),"observations; Level 2:",nrow(ild[!duplicated(ild$ID),]),"participants")
+
+# selecting variable names
+VarNames <- c("NV","TD","TC")
+
+# computing mean and standard deviation
+desc <- c() # empty vector to be filled with descriptive stats
+for(VarName in VarNames){ # for each time-varying variable...
+  desc[VarName] <- # ...computing mean and SD and pasting them together
+    paste0(round(mean(ild[,VarName]),2),
+           " (",round(sd(ild[,VarName]),2),")") } 
+desc["age"] <- # same thing for age but based on the wide-form dataset
+  paste0(round(mean(prelqs$age),2), 
+         " (",round(sd(prelqs$age),2),")") 
+desc["gender"] <- # frequency and % of categorical variables (gender)
+  paste0(table(prelqs$gender)[1]," F (",
+         round(100*prop.table(table(prelqs$gender)),2),"%)")
+
+# computing ICC(1) based on variance decomposition
+library(lme4) # loading package to fit linear mixed-effects regression models
+icc <- c() # empty vector to be filled with ICC values
+for(VarName in VarNames){ # foreach time-varying variable..
+  fit <- lmer(as.formula(paste(VarName,"~ (1|ID)")), data = ild) # fitting null multilevel model
+  tau00 <- summary(fit)$varcor$ID[[1]] # variance of the random intercept
+  sigma2 <- summary(fit)$sigma^2 # residual variance
+  icc <- c(icc, VarName = round(tau00/(tau00 + sigma2),2)) # ICC = tau00/(tau00+sigma2)
+  }
+
+# computing level-specific correlations among time-varying variables
+cor1 <- round(cor(ild[,paste0(VarNames,"w")]),2) # level 1 (cluster-mean-centered)
+cor2 <- round(cor(ild[!duplicated(ild$ID),paste0(VarNames,"b")]),2) # level 2 (cluster means)
+cor1[lower.tri(cor1)] <- cor2[lower.tri(cor2)] # merging the two matrices
+rownames(cor1) <- colnames(cor1) <- VarNames # adding variable labels
+
+# adding level-2 correlations with age + empty row for gender
+cor1 <- rbind(cor1,
+              cor(x=ild[!duplicated(ild$ID),c(paste0(VarNames,"b"),"age")],)[4,1:3],
+              matrix(rep(NA,3),nrow=1))
+rownames(cor1)[4:5] <- c("age","gender")
+
+# joining and printing descriptive stats, ICC, and correlations
+cbind(data.frame(Desc = desc, ICC = c(icc, NA, NA)), round(cor1, 2))
+```
+
+<br>
+
+### psych
+
+Here, we illustrate how the same operations can be optimized with the `psych` package. First, we use the `describe` function to compute the number of observations, mean and standard deviation of each quantitative variable. Second, we use the `statBy` function to compute ICCs(1) for each time-varying variable and level-specific correlations. Finally, we show how to extract and report the significance level of each correlation coefficient.
+```{r warning=FALSE}
+# loading psych package
+library(psych)
+
+# computing number of observations, mean and sd
+desc <- rbind(describe(ild[,c("NV","TD","TC")])[,c("n","mean","sd")], # time-varying
+              describe(prelqs[,"age"])[,c("n","mean","sd")]) # time-invariant
+
+# computing ICC(1)
+icc <- c(round(statsBy(ild[,c("NV","TD","TC")],group=ild$ID)$ICC1[1:3],2)) 
+
+# computing level-specific correlations
+cors <- psych::statsBy(ild[,c("NV","TD","TC","age")],group=ild$ID)
+cors$rwg[lower.tri(cors$rwg)] <- cors$rbg[lower.tri(cors$rbg)] # merging lv-1 & lv-2 correlations
+
+# joining and printing descriptive stats, ICC, and correlations
+desc <- cbind(data.frame(Desc = desc, ICC = c(icc, NA)), round(cors$rwg[,1:3], 2))
+rownames(desc) <- c("NV","TD","TC","age") # renaming rows
+colnames(desc) <- c("n","mean","SD","ICC","NV","TD","TC") # renaming columns
+desc # printing descriptive stats
+
+# optional: adding asterisks for p-values
+cors$pwg[lower.tri(cors$pwg)] <- cors$pbg[lower.tri(cors$pbg)] # merging lv-1 & lv-2 p-values
+p <- matrix(nrow=4,ncol=3) # creating empty matrix to be filled with significance levels
+for(i in 1:4){
+  for(j in 1:3){
+    if(!is.na(cors$pwg[i,j]) & cors$pwg[i,j] != 1){
+      desc[i,j+4] <- paste0(desc[i,j+4], # adding asterisks to correlation coefficients
+                            ifelse(cors$pwg[i,j] < .001,
+                                   "***",
+                                   ifelse(cors$pwg[i,j] < .01,
+                                          "**",
+                                          ifelse(cors$pwg[i,j] < .05,
+                                                 "*","")))) }}}
+desc # printing descriptive stats
+```
+
+<br>
+
+## 2.2. Regression models
+
+Here, we fit and print the two illustrative models testing JDC hypotheses. This is done by including cluster-mean-centered task demands `TDw` and task control `TCw` and their level-1 interaction in Model 1, whereas model 2 includes and tests the cross-level interaction between cluster-mean-centered task demands `TDw` and the cluster means of task control `TCb`. In both models, we include `age` and `gender` as level-2 covariates and a random slope for task demands. Both models are fitted with the REML estimator (see [McNeish, 2017](#ref)).
+```{r warning=FALSE,message=FALSE}
+# loading required packages
+library(lme4); library(sjPlot)
+```
+```{r fig.width=9,fig.height=3}
+# fitting models
+fit1 <- lmer(NV ~ TDw * TCw + age + gender + (TDw|ID), data = ild)
+fit2 <- lmer(NV ~ TDw * TCb + age + gender + (TDw|ID), data = ild)
+
+# printing output table
+tab_model(fit1, fit2,
+          show.se = TRUE, collapse.se = TRUE, p.val = "wald", # Wald approximation
+          show.ci = FALSE, show.icc = FALSE)
+```
+
+Note that the marginal and conditional $R^2$ are estimates of the proportion of negative valence variance explained by fixed effects only and by both fixed and random effects, respectively.
+
+<br>
+
+Finally, we plot the estimated interactions.
+```{r warning=FALSE,message=FALSE}
+# loading required packages
+library(ggplot2); library(gridExtra)
+```
+```{r fig.width=9,fig.height=3,message=FALSE}
+# setting graphical parameters
+sd_tc1 <- round(sd(ild$TCw),2) # computing TC standard dev. at level 1
+mean_tc2 <- round(mean(means$TCb),2) # computing mean TC at level 2
+sd_tc2 <- round(sd(means$TCb),2) # computing TC standard dev. at level 2
+labs <- c("-1 SD","+1 SD") # setting legend labels
+cols <- c("black","#666666") # setting colors
+lins <- c("solid","dashed") # setting line types
+
+# plotting
+p <- grid.arrange(
+  # Model 1 (TCw +/- 1 SD)
+  plot_model(fit1,type="pred",terms=c("TDw",paste0("TCw [",-sd_tc1,",",sd_tc1,"]"))) + 
+    scale_color_manual(labels=labs,values=cols) +
+    scale_linetype_manual(labels=labs,values=lins) + 
+    scale_fill_manual(labels=labs,values=cols) + ggtitle("") + 
+    xlab("Task demand (within)") + ylab("Negative valence") +
+    guides(color=guide_legend(title="Task Control\n(within)")),
+  # Model 2 (Mean TCb +/- 1 SD)
+  plot_model(fit2,type="pred",
+             terms=c("TDw",paste0("TCb [",mean_tc2-sd_tc1,",",mean_tc2+sd_tc1,"]"))) +
+    scale_color_manual(labels=labs,values=cols) +
+    scale_linetype_manual(labels=labs,values=lins) + 
+    scale_fill_manual(labels=labs,values=cols) + ggtitle("") + 
+    xlab("Task demand (within)") + ylab("Negative valence") +
+    guides(color=guide_legend(title="Task control\n(between)")), nrow=1)
+
+# exporting figure
+ggsave("fig2.png", plot = p, dpi = 300)
+```
+
+<br>
+
+# 3. Multiverse approach
+
+Here, we integrate the code provided for each step into a unified function `ild.manip` to illustrate how results might change based on data manipulation choices. Note that some of the function arguments are set by default as required by our illustrative example.
+
+<details><summary>show `ild.manip`</summary>
+<p>
+```{r }
+#' @title Intensive longitudinal data manipulation
+#' @param long = long-form dataset (data.frame)
+#' @param wide = wide-form dataset (data.frame)
+#' @param cluster = name of the cluster variable identifying participants (character)
+#' @param long.respTime = name of the time variable in the long-form dataset (character)
+#' @param respTime.format = time format used by the long.respTime variable (character) (see ?strptime)
+#' @param scheduledTimes = list of three-element character vectors reporting the minimum, central, and maximum time for each scheduled measurement using the same time format set in the scheduledTimes.format argument
+#' @param scheduledTimes.format = time format (without date) used in the scheduledTimes argument (character) (default "%H:%M:%S")
+#' @param long.variables = list of variable names in the long-form dataset (i.e., for each variable, it should include a list element named with the variable name and including a vector of variable names reporting the name of each item; with single-item measures only the variable name should be specified, without any vector)
+#' @param wide.variables = list of variable names in the wide-form dataset (see long.variables)
+#' @param remove.first.beep = logical value determining whether the first measurement occasion within each day should be excluded (TRUE) or not (FALSE, default)
+#' @param remove.first.day = logical value determining whether the first day of each participant should be excluded (TRUE) or not (FALSE, default)
+#' @param listwise.del = logical value determining whether a list-wise deletion should be applied (TRUE) or not (FALSE, default)
+#' @param compliance.cutoff = numeric value indexing the minimum number of observations or compliance rate cut-off used to exclude participants (NA by default, meaning that all participants are included)
+#' @param compliance.type = character value determining whether the compliance.cutoff value is expressed as the minimum number of observations (compliance.type = "obs") or as the minimum compliance rate (compliance.type="perc")
+#' @param max.nobs = integer indexing the maximum number of responses per participant (required when compliance.type="perc")
+
+ild.manip <- function(long, wide, cluster = "ID", long.respTime = "RunTimestamp",
+                      respTime.format = "%Y-%m-%d %H:%M:%S",
+                      scheduledTimes = list(c("09:15:00","09:30:00","10:15:00"),  # beep 1
+                                            c("10:20:00","10:30:00","10:40:00"),  # beep 2
+                                            c("11:50:00","12:00:00","12:10:00"),  # beep 3
+                                            c("13:20:00","13:30:00","13:40:00"),  # beep 4
+                                            c("14:50:00","15:00:00","15:10:00"),  # beep 5
+                                            c("16:20:00","16:30:00","16:40:00"),  # beep 6
+                                            c("17:50:00","18:00:00","18:10:00")), # beep 7
+                      scheduledTimes.format = "%H:%M:%S",
+                      long.variables = list(NV = c("v1","v2","v3"), 
+                                            TD = c("d1","d2","d3","d4"), 
+                                            TC = c("c1","c2","c3")),
+                      wide.variables = list("gender","age"), 
+                      remove.first.beep = FALSE, remove.first.day = FALSE,
+                      listwise.del = FALSE, compliance.cutoff = NA, 
+                      compliance.type = c("obs","perc"), max.nobs = 18){
+  
+  # renaming variables
+  colnames(long)[which(colnames(long)==cluster)] <- "ID" # cluster variable in the long dataset
+  colnames(wide)[which(colnames(wide)==cluster)] <- "ID" # cluster variable in the wide dataset
+  colnames(long)[which(colnames(long)==long.respTime)] <- "respTime" # time variable in the long dataset
+  
+  # 1) data reading (removing unuseful columns).........................................................
+  #.....................................................................................................
+  long <- long[,which(colnames(long) %in% c("ID","respTime",as.character(unlist(long.variables))))]
+  wide <- wide[,which(colnames(wide) %in% c("ID",as.character(unlist(wide.variables))))]
+  
+  # print info
+  cat("Data pre-processing...\n\n")
+  
+  # 2) temporal synchronization..........................................................................
+  #......................................................................................................
+  long$time <- as.POSIXct(strftime(as.POSIXct(long$respTime, format="%Y-%m-%d %H:%M:%S"),
+                                   format="%H:%M:%S"),format="%H:%M:%S") # resp time
+  long$date <- as.Date(substr(long$respTime,1,10),format="%Y-%m-%d") # resp date without time
+  # creating 'day' variable base on response dates
+  long$day <- 1 
+  for(i in 2:nrow(long)){ if(long[i,"ID"] != long[i-1,"ID"]){ long[i,"day"] <- 1 } else {
+      if(!is.na(long[i,"date"]) & !is.na(long[i-1,"date"]) & 
+         as.POSIXlt(long[i,"date"])$wday != as.POSIXlt(long[i-1,"date"])$wday){
+        long[i,"day"] <- long[i-1,"day"] + 1 } else{ long[i,"day"] <- long[i-1,"day"] }}}
+  # creating 'beep' variable based on scheduled timestamps
+  if(!is.na(scheduledTimes[[1]][1])){ central.times <- c() # saving vector of central times
+    for(i in 1:length(scheduledTimes)){ # assign beep value depending on each couple of min-max
+      long[!is.na(long$time) & 
+             long$time > (as.POSIXct(scheduledTimes[[i]][1], 
+                                     format = scheduledTimes.format) - 10*60) & 
+            long$time < (as.POSIXct(scheduledTimes[[i]][3], 
+                                    format = scheduledTimes.format) + 10*60),"beep"] <- i 
+      central.times <- c(central.times, scheduledTimes[[i]][2]) }
+  # when time is outside the scheduled interval, the closest 'beep' is assigned
+  for(i in 1:nrow(long)){ require(birk) 
+    if(is.na(long[i,"beep"]) & !is.na(long[i,"time"])){ 
+      long[i,"beep"] <- which.closest(as.POSIXct(central.times, format = scheduledTimes.format),
+                                      long[i,"time"]) }}}
+  
+  # 3) data cleaning.....................................................................................
+  #......................................................................................................
+  n1.long<-nrow(long) # save N.obs for comparison
+  n2.long<-length(table(long$ID))
+  n2.wide<-length(table(wide$ID))
+  n <- 1; for(i in 1:length(wide.variables)){ if(length(wide.variables[i]) > 1){ n <- n + 1 }}
+  # 3.1) removing missing resps from the wide-form dataset...............................................
+  if(n == 1){ wide <- na.omit(wide[,c("ID",unlist(wide.variables))]) 
+  } else { VarNames <- "ID"
+    for(i in 1:length(wide.variables)){ VarNames <- c(VarNames,names(wide.variables[i])) }
+    wide <- na.omit(wide[,VarNames]) }
+  long <- long[long$ID %in% as.character(wide$ID),] # removing cases that are not included in the wide dataset
+  long$ID <- as.factor(as.character(long$ID)) # resetting levels
+  cat("Data cleaning:\n-",n1.long-nrow(long),"obs,",n2.long-nlevels(long$ID),
+      "participants not in the wide dataset")
+  # 3.2) removing cases with missing responses to the long-form dataset..................................
+  long <- long[!is.na(long$respTime),] 
+  long$ID <- as.factor(as.character(long$ID)) # resetting levels
+  wide <- wide[wide$ID %in% levels(long$ID),] # removing cases that are not included in the long dataset
+  wide$ID <- as.factor(as.character(wide$ID)) # resetting levels
+  cat("\n-",n2.wide-nrow(wide),"participants not in the long dataset")
+  # 3.3) removing first observation within each day......................................................
+  n1.long<-nrow(long); n2.long<-nlevels(long$ID) # saving sample sizes for comparison
+  if(isTRUE(remove.first.beep)){ 
+    if(!is.na(scheduledTimes[[1]][1])){ 
+      long <- long[long$beep!=1,] # removing 1st 'beep' when scheduledTimes are specified
+    } else { LONG <- long[0,] # removing the first daily observation when scheduledTimes are NOT specified
+      long$IDday <- paste(long$ID,long$day) # creating identifier based on both ID and day
+      for(obs in levels(as.factor(long$IDday))){ LONG <- rbind(LONG,long[long$IDday == obs,][-1,]) }
+      long <- LONG }}
+  # 3.4) removing first day..............................................................................
+  if(isTRUE(remove.first.day)){ long <- long[long$day!=1,] } 
+  long$ID <- as.factor(as.character(long$ID)) # resetting levels
+  if(isTRUE(remove.first.beep) | isTRUE(remove.first.day)){
+    cat("\n-",n1.long-nrow(long),"obs,",n2.long-nlevels(long$ID),
+        "participants following the removal of the 1st",
+        ifelse(isTRUE(remove.first.beep) & isTRUE(remove.first.day),"day and the 1st daily survey",
+               ifelse(isTRUE(remove.first.beep),"daily survey","day"))) }
+  # 3.5) list-wise deletion..............................................................................
+  n1.long<-nrow(long); n2.long<-nlevels(long$ID) # saving sample sizes for comparison
+  if(isTRUE(listwise.del)){ long <- na.omit(long[,c("ID","respTime","day",as.character(unlist(long.variables)))]) 
+    long$ID <- as.factor(as.character(long$ID)) # resetting levels
+    cat("\n-",n1.long-nrow(long),"obs,",n2.long-nlevels(long$ID),
+        "participants following list-wise deletion")}
+  # 3.5) excluding participants based on compliance rate.................................................
+  if(!is.na(compliance.cutoff)){ n1.long<-nrow(long); n2.long<-nlevels(ild$ID) # saving sample sizes
+    if(compliance.type=="obs"){ # compliance based on overall number of observations
+      for(day in min(as.integer(long$day)):max(as.integer(long$day))){ 
+        for(i in 1:nrow(wide)){ # computing no. obs per day and participant
+          wide[i,paste0("n.day",day)] <- nrow(long[long$ID==as.character(wide[i,"ID"]) & long$day==day,]) }
+        colnames(wide)[ncol(wide)] <- "nDay" # renaming column
+        wide <- wide[wide$nDay >= compliance.cutoff,] # removing participants
+        colnames(wide)[ncol(wide)] <- paste0("n.day",day) }
+    } else if(compliance.type=="perc"){ # compliance based on percentage of responses
+        for(i in 1:nrow(wide)){ 
+          wide[i,"compRate"] <- 100*nrow(long[long$ID==as.character(wide[i,"ID"]),])/max.nobs }
+      wide <- wide[wide$compRate >= compliance.cutoff,] }
+    long <- long[long$ID %in% as.character(wide$ID),] # removing the same participants from the long dataset
+    long$ID <- as.factor(as.character(long$ID)) # resetting levels
+    cat("\n-",n1.long-nrow(long),"obs,",n2.long-nlevels(long$ID),
+      "participants with",ifelse(compliance.type=="obs",paste("less than",compliance.cutoff,"obs per day"),
+                                 paste("compliance rate <",compliance.cutoff,"%"))) }
+  
+  # 4) data merging........................................................................................
+  #........................................................................................................
+  require(plyr)
+  long <- join(long, wide, by = "ID")
+  
+  # 5) computing composite scores..........................................................................
+  #........................................................................................................
+  n <- 1; for(i in 1:length(long.variables)){ if(length(long.variables[[i]]) > 1){ n <- n + 1 }}
+  if(n > 1){
+    for(i in 1:length(long.variables)){
+      long[,names(long.variables)[i]] <- apply(long[,long.variables[[i]]],1,mean,na.rm=TRUE) }}
+  
+  # 6) data centering......................................................................................
+  #........................................................................................................
+  if(n > 1){
+    for(VarName in names(long.variables)){ 
+      colnames(long)[colnames(long)==VarName] <- "VarName" # changing variable name
+      clust.means <- aggregate(x = long$VarName, # cluster means
+                               by = list(long$ID), FUN = mean, na.rm = TRUE) 
+      colnames(clust.means) <- c("ID","VarNameb") # renaming variable
+      long <- join(long, clust.means, by="ID") # joining cluster mean to long-form dataset
+      long$VarNamew <- long$VarName - long$VarNameb # cluster mean centering
+      colnames(long) <- gsub("VarName",VarName,colnames(long)) }} # back to the original variable name
+  
+  # print info
+  long$ID <- as.factor(as.character(long$ID))
+  cat("\n\nTotal number of retained observations =",nrow(long),"from",nlevels(long$ID),"participants")
+  
+  # returning data
+  return(long) }
+```
+</p>
+</details>
+
+<br>
+
+## 3.1. Multiverse of datasets
+
+First, we apply the function to the raw datasets by considering alternative data manipulation scenarios.
+```{r }
+# reading raw datasets
+long <- read.csv("S5_processedData/ESM_processed.csv", stringsAsFactors = TRUE) # ILD dataset
+wide <- read.csv("S5_processedData/RETRO_processed.csv", stringsAsFactors = TRUE) # preliminary questionnaire
+
+# scenario #1: same settings as above (a part from the single careless response, which is retained)
+m1 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE,  listwise.del = TRUE, 
+                compliance.cutoff = 2, compliance.type = "obs")
+# scenario #2: no data cleaning (i.e., retaining all available observations)
+m2 <- ild.manip(long, wide)
+# scenario #3: removing first response regardless of response time
+m3 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE,  listwise.del = TRUE, 
+                compliance.cutoff = 2, compliance.type = "obs",
+                scheduledTimes = NA)
+# scenario #4: removing first day
+m4 <- ild.manip(long, wide, 
+                remove.first.day = TRUE,   listwise.del = TRUE, 
+                compliance.cutoff = 2, compliance.type = "obs")
+# scenario #5: stricter compliance rate (3+ observations per day)
+m5 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE, listwise.del = TRUE, 
+                compliance.cutoff = 3, compliance.type = "obs")
+# scenario #6: compliance rate > 30%
+m6 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE, listwise.del = TRUE, 
+                compliance.cutoff = 30, compliance.type = "perc")
+# scenario #7: compliance rate > 75%
+m7 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE, listwise.del = TRUE, 
+                compliance.cutoff = 75, compliance.type = "perc")
+# scenario #8: (4) and (7)
+m8 <- ild.manip(long, wide, 
+                remove.first.beep = TRUE, listwise.del = TRUE, 
+                compliance.cutoff = 30, compliance.type = "perc",
+                scheduledTimes = NA)
+# scenario #9: (4) and (8)
+m9 <- ild.manip(long,wide, 
+                 remove.first.beep = TRUE, listwise.del = TRUE, 
+                 compliance.cutoff = 75, compliance.type = "perc",
+                scheduledTimes = NA)
+```
+
+<br>
+
+## 3.2. Results
+
+Here, we fit the same models fitted above on each generated dataset, and we summarize the results by reporting the value `TRUE` (i.e., significant) or `FALSE` (i.e., non-significant) for each main and interactive effect of interest. We can see that the results obtained above are quite robust across the considered scenarios. Specifically, the most robust findings concern the negative level-1 effect of task control (significant across all scenarios) and the lack of level-1 interaction (non-significant across all scenarios). The main effect of task demands estimated by Model 1 is also quite robust, being non-significant only in one case (i.e., removal of the first day). Finally, the main and interactive effects estimated by Model 2 become non-significant only when a compliance rate of 70% is applied, yet the resulting datasets are very small (i.e., *n1* ranging from 216 to 358, *n2* ranging from 14 to 23). Overall, such robustness checks **support the generalizability of our findings**.
+```{r }
+# multiverse of datasets as a list
+m <- list(m1,m2,m3,m4,m5,m6,m7,m8,m9)
+
+# data.frame of results to be filled
+out <- data.frame(matrix(nrow=0,ncol=8))
+colnames(out) <- c("N1","N2","m1.TDw","m1.TCw","m1.int","m2.TDw","m2.TCb","m2.int")
+
+# fitting models on each dataset
+for(i in 1:length(m)){
+  fit1 <- lmer(NV ~ TDw * TCw + age + gender + (TDw|ID), data = m[[i]])
+  fit2 <- lmer(NV ~ TDw * TCb + age + gender + (TDw|ID), data = m[[i]])
+  out <- rbind(out, # extracting results (i.e., effects marked as TRUE if Coeff./SE > 1.96, FALSE otherwise)
+               data.frame(N1 = length(residuals(fit1)), N2 = as.integer(summary(fit1)$ngrps), # sample sizes
+                          m1.TDw=abs(summary(fit1)$coefficients[2,3])>1.96, # model 1 main effects
+                          m1.TCw=abs(summary(fit1)$coefficients[3,3])>1.96, 
+                          m1.int=abs(summary(fit1)$coefficients[6,3])>1.96, # model 1 interaction
+                          m2.TDw=abs(summary(fit2)$coefficients[2,3])>1.96, # model 2 main effects
+                          m2.TCb=abs(summary(fit2)$coefficients[3,3])>1.96, 
+                          m2.int=abs(summary(fit2)$coefficients[6,3])>1.96)) } # model 2 interaction
+cbind(data=c("1. Original","2. All in","3. 1st resp out","4. 1st day out", # printing results
+             "5. 3+ obs/day","6. 30% compl","7. 70% compl","8. (4) & (7)","19. (4) & (8)"),out) # naming scenarios
+```
+
+<br>
+
+# References {#ref}
+
+- Caughlin, D. E. (2023). *R for HR: An Introduction to Human Resource Analytics Using R*. https://rforhr.com/index.html#hragrowth 
+- Cranford, J. A., Shrout, P. E., Iida, M., Rafaeli, E., Yip, T., & Bolger, N. (2006). A Procedure for Evaluating Sensitivity to Within-Person Change: Can Mood Measures in Diary Studies Detect Change Reliably? *Personality and Social Psychology Bulletin, 32*(7), 917--929. <https://doi.org/10.1177/0146167206287721>
+
+- Curran, P. G. (2016). Methods for the detection of carelessly invalid responses in survey data. Journal of Experimental Social Psychology, 66, 4-19. <https://doi.org/10.1016/j.jesp.2015.07.006>
+
+- Einspruch, E. L. (2022). *An Introductory Guide to R: Easing the Learning Curve*. Guilford Press.
+
+- Geldhof, G. J., Preacher, K. J., & Zyphur, M. J. (2014). Reliability estimation in a multilevel confirmatory factor analysis framework. *Psychological Methods, 19*(1), 72–91. https://doi.org/10.1037/a0032138
+
+- Wickham, H., Cetinkaya-Rundel, M., & Grolemund  G. (2023). R for Data Science: Import, Tidy, Transform, Visualize, and Model (2nd Ed.). O’Reilly. Available at https://r4ds.hadley.nz/
+
+- Hamaker, E. L., & Grasman, R. P. P. P. (2015). To center or not to center? Investigating inertia with a multilevel autoregressive model. Frontiers in Psychology, 5. https://doi.org/10.3389/fpsyg.2014.01492 
+
+- Huang, J. L., Curran, P. G., Keeney, J., Poposki, E. M., & DeShon, R. P. (2012). Detecting and deterring insufficient effort responding to surveys. Journal of Business and Psychology, 27, 99-114. <https://doi.org/10.1007/s10869-011-9231-8>
+
+- Jak, S., & Jorgensen, T. D. (2017). Relating measurement invariance, cross-level invariance, and multilevel reliability. *Frontiers in psychology, 8*, 1640. <https://doi.org/10.3389/fpsyg.2017.01640>
+
+- Kabacoff, R. I. (2022). *R in Action: Data analysis and graphics with R and Tidyverse* (3rd. Ed). Manning.
+
+- Karasek, R. A. (1979). Job Demands, Job Decision Latitude, and Mental Strain: Implications for Job Redesign. *Administrative Science Quarterly, 24*(2), 285--308. <https://doi.org/10.2307/2392498>
+
+- McNeish, D. (2017). Small Sample Methods for Multilevel Modeling: A Colloquial Elucidation of REML and the Kenward-Roger Correction. *Multivariate Behavioral Research, 52*(5), 661–670. https://doi.org/10.1080/00273171.2017.1344538
+
+- McNulty, K. (2022). *Handbook of Regression Modeling in People Analytics: With Examples in R, Python and Julia*. CRC Press. Freely available at https://peopleanalytics-regression-book.org/index.html
+
+- Menghini, L., Pastore, M., & Balducci, C. (2023). Workplace Stress in Real Time: Three Parsimonious Scales for the Experience Sampling Measurement of Stressors and Strain at Work. *European Journal of Psychological Assessment, 39*(6), 424–432. https://doi.org/10.1027/1015-5759/a000725
+
+- Shrout, P. E., & Lane, S. P. (2012). Psychometrics. In M. R. Mehl & T. S. Conner (Eds.), *Handbook of research methods for studying daily life* (pp. 302--320). The Guilford Press.
+
+- Starbuck, C. (2023). *The Fundamentals of People Analytics With Applications in R*. Springer. Freely available at https://link.springer.com/book/10.1007/978-3-031-28674-2 
+
+- Wang, L. P., & Maxwell, S. E. (2015). On disaggregating between-person and within-person effects with longitudinal data using multilevel models. *Psychological Methods, 20*(1), 63–83. https://doi.org/10.1037/met0000030 
+
+- Wickham, H., Çetinkaya-Rundel, M., & Grolemund, G. (2023). *R for Data Science: Import, Tidy, Transform, Visualize, and Model Data* (2nd Ed.). O'Reilly.
+
+<br>
+
+## R packages
